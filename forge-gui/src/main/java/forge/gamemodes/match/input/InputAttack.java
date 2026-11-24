@@ -1,0 +1,387 @@
+/*
+ * Forge: Play Magic: the Gathering.
+ * Copyright (C) 2011  Forge Team
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package forge.gamemodes.match.input;
+
+import com.google.common.collect.Sets;
+import forge.game.GameEntity;
+import forge.game.GameEntityView;
+import forge.game.card.Card;
+import forge.game.card.CardCollectionView;
+import forge.game.card.CardLists;
+import forge.game.card.CardView;
+import forge.game.combat.AttackingBand;
+import forge.game.combat.Combat;
+import forge.game.combat.CombatExplainer;
+import forge.game.combat.CombatUtil;
+import forge.game.event.GameEventCombatUpdate;
+import forge.game.keyword.Keyword;
+import forge.game.player.Player;
+import forge.game.staticability.StaticAbilityMustAttack;
+import forge.game.zone.ZoneType;
+import forge.gamemodes.match.Selection;
+import forge.gui.events.UiEventAttackerDeclared;
+import forge.gui.util.SOptionPane;
+import forge.player.PlayerControllerHuman;
+import forge.trackable.TrackableObject;
+import forge.util.ITriggerEvent;
+import forge.util.Localizer;
+import forge.util.ThreadUtil;
+import forge.util.collect.FCollectionView;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * <p>
+ * InputAttack class.
+ * </p>
+ *
+ * @author Forge
+ * @version $Id: InputAttack.java 24769 2014-02-09 13:56:04Z Hellfish $
+ */
+public class InputAttack extends InputSyncronizedBase {
+    private static final long serialVersionUID = 7849903731842214245L;
+
+    private final Combat combat;
+    private final FCollectionView<GameEntity> defenders;
+    private GameEntity currentDefender;
+    private final Player playerAttacks;
+    private AttackingBand activeBand = null;
+    private boolean potentialBanding;
+    // why the last selected creature(s) couldn't be declared as attacker, shown with the prompt
+    private String rejectionReason = null;
+
+    public InputAttack(PlayerControllerHuman controller, Player attacks0, Combat combat0) {
+        super(controller);
+        playerAttacks = attacks0;
+        combat = combat0;
+        defenders = combat.getDefenders();
+    }
+
+    @Override
+    public final void showMessage() {
+        setCurrentDefender(defenders.getFirst());
+
+        if (currentDefender == null) {
+            System.err.println("InputAttack has no potential defenders!");
+            updatePrompt();
+            return; // should even throw here!
+        }
+
+        updateMessage();
+    }
+
+    //determine whether currently attackers can be called back (undeclared)
+    private boolean canCallBackAttackers() {
+        return !CardLists.filterControlledBy(combat.getAttackers(), playerAttacks).isEmpty();
+    }
+
+    private void updatePrompt() {
+        Localizer localizer = Localizer.getInstance();
+        String alphaLabel = canCallBackAttackers() ? localizer.getMessage("lblCallBack") : localizer.getMessage("lblAlphaStrike");
+        getController().getGui().updateButtons(getOwner(), localizer.getMessage("lblOK"), alphaLabel, true, true, true);
+    }
+
+    private void disablePrompt() {
+        Localizer localizer = Localizer.getInstance();
+        getController().getGui().updateButtons(getOwner(), localizer.getMessage("lblDisabled"), localizer.getMessage("lblDisabled"), false, false, false);
+    }
+
+    @Override
+    protected final void onOk() {
+        // only refused when this player can make the attack legal with their own creatures (CR 805.10b)
+        final List<String> invalidReasons = CombatExplainer.explainInvalidAttack(combat, playerAttacks);
+        if (!invalidReasons.isEmpty()) {
+            final String attackErrors = String.join("\n", invalidReasons);
+            //must run in game thread to prevent problems for mobile game
+            ThreadUtil.invokeInGameThread(() -> {
+                final Localizer localizer = Localizer.getInstance();
+                final String title = localizer.getMessage("lblCombatDeclareAttackersStep");
+                final List<String> options = List.of(localizer.getMessage("lblOK"), localizer.getMessage("lblShowLegalAttacks"));
+                // only suggest legal attacks when asked for, closing the dialog counts as OK
+                if (getController().getGui().showOptionDialog(attackErrors, title, SOptionPane.WARNING_ICON, options, 0) == 1) {
+                    getController().getGui().message(CombatExplainer.suggestLegalAttacks(combat, playerAttacks), title);
+                }
+            });
+            return;
+        }
+        // Propaganda costs could have been paid here.
+        stop();
+    }
+
+    @Override
+    protected final void onCancel() {
+        //either alpha strike or undeclare all attackers based on whether any attackers have been declared
+        if (canCallBackAttackers()) {
+            //undeclare all attackers
+            for (Card c : CardLists.filterControlledBy(combat.getAttackers(), playerAttacks)) {
+                undeclareAttacker(c);
+            }
+        } else {
+            alphaStrike();
+        }
+        updateMessage();
+    }
+
+    void alphaStrike() {
+        final List<Player> defenders = playerAttacks.getOpponents();
+        final Set<CardView> refreshCards = Sets.newHashSet();
+
+        for (final Card c : playerAttacks.getCreaturesInPlay()) {
+            if (combat.isAttacking(c)) {
+                continue;
+            }
+
+            final List<GameEntity> mustAttack = StaticAbilityMustAttack.entitiesMustAttack(c);
+            if (!mustAttack.isEmpty()) {
+                for (final GameEntity defender : mustAttack) {
+                    if (combat.getDefenders().contains(defender) && CombatUtil.canAttack(c, defender)) {
+                        combat.addAttacker(c, defender);
+                        refreshCards.add(CardView.get(c));
+                        break;
+                    }
+                }
+                if (combat.isAttacking(c)) {
+                    continue;
+                }
+            }
+
+            if (currentDefender != null && CombatUtil.canAttack(c, currentDefender)) {
+                combat.addAttacker(c, currentDefender);
+                refreshCards.add(CardView.get(c));
+                continue;
+            }
+
+            for (final Player defender : defenders) {
+                if (CombatUtil.canAttack(c, defender)) {
+                    combat.addAttacker(c, defender);
+                    refreshCards.add(CardView.get(c));
+                    break;
+                }
+            }
+        }
+        getController().getGui().updateCards(refreshCards);
+        updateMessage();
+    }
+
+    @Override
+    protected final void onPlayerSelected(Player selected, final ITriggerEvent triggerEvent) {
+        rejectionReason = null;
+        if (defenders.contains(selected)) {
+            setCurrentDefender(selected);
+        } else {
+            getController().getGui().flashIncorrectAction(); // cannot attack that player
+        }
+    }
+
+    @Override
+    protected final boolean onCardSelected(final Card card, final List<Card> otherCardsToSelect, final ITriggerEvent triggerEvent) {
+        disablePrompt();
+        rejectionReason = null;
+        final List<Card> att = combat.getAttackers();
+        if (triggerEvent != null && triggerEvent.getButton() == 3 && att.contains(card)) {
+            undeclareAttacker(card);
+            if (otherCardsToSelect != null) {
+                for (Card c : otherCardsToSelect) {
+                    undeclareAttacker(c);
+                }
+            }
+            updateMessage();
+            return true;
+        }
+
+        if (combat.isAttacking(card, currentDefender)) {
+            boolean validAction = true;
+            if (potentialBanding) {
+                // Activate band by selecting/deselecting a band member
+                if (activeBand == null) {
+                    activeBand = combat.getBandOfAttacker(card);
+                }
+                else if (activeBand.getAttackers().contains(card)) {
+                    activeBand = null;
+                }
+                else if (activeBand.canJoinBand(card)) {
+                    // Join a band by selecting a non-active band member after activating a band
+                    declareAttacker(card);
+                    if (otherCardsToSelect != null) {
+                        for (Card c : otherCardsToSelect) {
+                            if (activeBand.canJoinBand(c)) {
+                                declareAttacker(c);
+                            }
+                        }
+                    }
+                }
+                else {
+                    validAction = false;
+                }
+            } else {
+                //if banding not possible, just undeclare attacker
+                undeclareAttacker(card);
+                if (otherCardsToSelect != null) {
+                    for (Card c : otherCardsToSelect) {
+                        undeclareAttacker(c);
+                    }
+                }
+            }
+
+            updateMessage();
+            return validAction;
+        }
+
+        if (card.getController().isOpponentOf(playerAttacks) || playerAttacks.isOpponentOf(card.getProtectingPlayer())) {
+            if (defenders.contains(card)) { // planeswalker or battle?
+                setCurrentDefender(card);
+                updateMessage();
+                return true;
+            }
+        }
+
+        if (playerAttacks.getZone(ZoneType.Battlefield).contains(card) && CombatUtil.canAttack(card, currentDefender)) {
+            if (activeBand != null && !activeBand.canJoinBand(card)) {
+                activeBand = null;
+                updateMessage();
+                return false;
+            }
+
+            declareAttacker(card);
+            final List<String> reasons = new ArrayList<>();
+            if (otherCardsToSelect != null) {
+                for (Card c : otherCardsToSelect) {
+                    if (CombatUtil.canAttack(c, currentDefender)) {
+                        declareAttacker(c);
+                    } else if (playerAttacks.getZone(ZoneType.Battlefield).contains(c) && c.isCreature()) {
+                        reasons.add(CombatExplainer.whyCantAttack(c, currentDefender));
+                    }
+                }
+            }
+            rejectionReason = reasons.isEmpty() ? null : String.join("\n", reasons);
+
+            updateMessage();
+            return true;
+        }
+
+        if (playerAttacks.getZone(ZoneType.Battlefield).contains(card) && card.isCreature()) {
+            rejectionReason = CombatExplainer.whyCantAttack(card, currentDefender);
+            updateMessage();
+            return false;
+        }
+
+        updatePrompt();
+        return false;
+    }
+
+    @Override
+    public String getActivateAction(Card card) {
+        if (combat.isAttacking(card, currentDefender)) {
+            if (potentialBanding) {
+                return Localizer.getInstance().getMessage("lblActivateBand");
+            }
+            return Localizer.getInstance().getMessage("lblRemoveFromCombat");
+        }
+        if (card.getController().isOpponentOf(playerAttacks)) {
+            if (defenders.contains(card)) {
+                return Localizer.getInstance().getMessage("lblDeclareAttackersForCard");
+            }
+            return null;
+        }
+        if (playerAttacks.getZone(ZoneType.Battlefield).contains(card) && CombatUtil.canAttack(card, currentDefender)) {
+            return Localizer.getInstance().getMessage("lblAttackWithCard");
+        }
+        return null;
+    }
+
+    private void declareAttacker(final Card card) {
+        combat.removeFromCombat(card);
+        combat.addAttacker(card, currentDefender, activeBand);
+
+        card.getGame().getMatch().fireEvent(new UiEventAttackerDeclared(CardView.get(card), GameEntityView.get(currentDefender)));
+    }
+
+    private boolean undeclareAttacker(final Card card) {
+        combat.removeFromCombat(card);
+        // When removing an attacker clear the attacking band
+        activeBand = null;
+
+        card.getGame().getMatch().fireEvent(new UiEventAttackerDeclared(CardView.get(card), null));
+        return true;
+    }
+
+    private void setCurrentDefender(final GameEntity def) {
+        currentDefender = def;
+        rejectionReason = null;
+        if (def != null) {
+            potentialBanding = isBandingPossible();
+        }
+
+        updateMessage();
+    }
+
+    /** The defender being attacked and the band being formed. */
+    @Override
+    protected Selection getSelection() {
+        final List<TrackableObject> chosen = new ArrayList<>();
+        if (currentDefender != null) {
+            chosen.add(GameEntityView.get(currentDefender));
+        }
+        if (activeBand != null) {
+            for (final Card card : activeBand.getAttackers()) chosen.add(CardView.get(card));
+        }
+        return Selection.ofChosen(chosen);
+    }
+
+    @Override
+    protected List<CardView> getActionable() {
+        return getController().getAttackerCandidates(playerAttacks, combat);
+    }
+
+    //only enable banding message and actions if a creature that can attack has banding
+    private boolean isBandingPossible() {
+        final CardCollectionView possibleAttackers = playerAttacks.getCardsIn(ZoneType.Battlefield);
+        for (final Card c : possibleAttackers) {
+            if ((c.hasKeyword(Keyword.BANDING) || c.hasKeyword(Keyword.BANDSWITH)) &&
+                    CombatUtil.canAttack(c, currentDefender)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void updateMessage() {
+        Localizer localizer = Localizer.getInstance();
+        String message = localizer.getMessage("lblSelectAttackCreatures") + " " + currentDefender + " " + localizer.getMessage("lblSelectAttackTarget");
+        if (potentialBanding) {
+            message += localizer.getMessage("lblSelectBandingTarget");
+        }
+        if (rejectionReason != null) {
+            message += "\n\n" + rejectionReason;
+        }
+        showMessage(message);
+
+        updatePrompt();
+
+        // Resent after each click so declared attackers stop glowing.
+        // Can't reuse showMessage() — it also resets currentDefender.
+        showSelection();
+
+        if (combat != null)
+            getController().getGame().fireEvent(GameEventCombatUpdate.fromCards(combat.getAttackers(), combat.getAllBlockers()));
+
+        getController().getGui().showCombat(); // redraw sword icons
+    }
+}

@@ -1,0 +1,7 @@
+Name:Absorb Identity
+ManaCost:1 U
+Types:Instant
+A:SP$ ChangeZone | ValidTgts$ Creature | Origin$ Battlefield | Destination$ Hand | SubAbility$ CloneArmy | SpellDescription$ Return target creature to its owner's hand. You may have Shapeshifters you control become copies of that creature until end of turn.
+SVar:CloneArmy:DB$ Clone | Defined$ Targeted | CloneTarget$ Valid Shapeshifter.YouCtrl | Duration$ UntilEndOfTurn | Optional$ True
+DeckHints:Type$Shapeshifter
+Oracle:Return target creature to its owner's hand. You may have Shapeshifters you control become copies of that creature until end of turn.

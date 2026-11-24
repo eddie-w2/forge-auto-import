@@ -1,0 +1,422 @@
+package forge.util;
+
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+
+import forge.card.CardType;
+import forge.util.lang.*;
+import org.apache.commons.lang3.StringUtils;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+/**
+ * Static library containing language-related utility methods.
+ */
+public abstract class Lang {
+
+    private static Map<String, Lang> languages = Collections.synchronizedMap(Maps.newHashMap());
+
+    private static Lang instance;
+    private static Lang englishInstance;
+
+    public static void createInstance(String localeID) {
+        instance = initInstance(localeID);
+
+        // Create english instance for internal usage
+        englishInstance = initInstance("en-US");
+    }
+
+    public static Lang initInstance(String localeID) {
+        return languages.computeIfAbsent(localeID, k -> switch (k.split("-")[0]) {
+            case "de" -> new LangGerman();
+            case "es" -> new LangSpanish();
+            case "it" -> new LangItalian();
+            case "zh" -> new LangChinese();
+            case "ja" -> new LangJapanese();
+            case "ko" -> new LangKorean();
+            case "fr" -> new LangFrench();
+            case "ru" -> new LangRussian();
+            default -> new LangEnglish();
+        });
+    }
+
+    public static Lang getInstance() {
+        return instance;
+    }
+
+    public static Lang getEnglishInstance() {
+        return englishInstance;
+    }
+
+    protected Lang() {
+    }
+
+    public String getFontFile() {
+        return null;
+    }
+
+    public char canDisplayCheck() {
+        return ' ';
+    }
+
+    /**
+     * Return the ordinal suffix (2 characters) for the textual representation
+     * of a numbers, eg. "st" for 1 ("first") and "th" for 4 ("fourth").
+     * 
+     * @param position
+     *                 the number to get the ordinal suffix for.
+     * @return a string containing two characters.
+     */
+    public abstract String getOrdinal(final int position);
+
+    public static String joinHomogenous(final String s1, final String s2) {
+        final boolean has1 = StringUtils.isNotBlank(s1);
+        final boolean has2 = StringUtils.isNotBlank(s2);
+        return has1 ? (has2 ? s1 + " and " + s2 : s1) : (has2 ? s2 : "");
+    }
+
+    public static <T> String joinHomogenous(final Iterable<T> objects) {
+        return joinHomogenous(Lists.newArrayList(objects));
+    }
+
+    public static <T> String joinHomogenous(final Collection<T> objects) {
+        return joinHomogenous(objects, null, "and");
+    }
+
+    public static <T> String joinHomogenous(final Collection<T> objects, final Function<T, String> accessor) {
+        return joinHomogenous(objects, accessor, "and");
+    }
+
+    public static <T> String joinHomogenous(final Collection<T> objects, final Function<T, String> accessor,
+            final String lastUnion) {
+        int remaining = objects.size();
+        final StringBuilder sb = new StringBuilder();
+        for (final T obj : objects) {
+            remaining--;
+            if (accessor != null) {
+                sb.append(accessor.apply(obj));
+            } else {
+                sb.append(obj);
+            }
+            if (remaining > 1) {
+                sb.append(", ");
+            } else if (remaining == 1) {
+                sb.append(" ").append(lastUnion).append(" ");
+            }
+        }
+        return sb.toString();
+    }
+
+    public static <T> String joinVerb(final List<T> subjects, final String verb) {
+        return subjects.size() > 1 || !subjectIsSingle3rdPerson(Iterables.getFirst(subjects, "it").toString()) ? verb
+                : verbs3rdPersonSingular(verb);
+    }
+
+    public static String joinVerb(final String subject, final String verb) {
+        return !Lang.subjectIsSingle3rdPerson(subject) ? verb : verbs3rdPersonSingular(verb);
+    }
+
+    public static boolean subjectIsSingle3rdPerson(final String subject) {
+        // Will be most simple
+        return !"You".equalsIgnoreCase(subject);
+    }
+
+    public static String verbs3rdPersonSingular(final String verb) {
+        // English is simple - just add (s) for multiple objects.
+        return verb + "s";
+    }
+
+    public static String getPlural(final String noun) {
+        return noun + (noun.endsWith("s") && !noun.endsWith("ds") || noun.endsWith("x") || noun.endsWith("ch") ? "es"
+                : noun.endsWith("ds") ? "" : "s");
+    }
+
+    public static String nounWithAmount(final int cnt, final String noun) {
+        final String countedForm = cnt == 1 ? noun : getPlural(noun);
+        final String strCount;
+        if (cnt == 1) {
+            strCount = startsWithVowel(noun) ? "an " : "a ";
+        } else {
+            strCount = cnt + " ";
+        }
+        return strCount + countedForm;
+    }
+
+    public static String nounWithNumeral(final int cnt, final String noun) {
+        final String countedForm = cnt == 1 ? noun : getPlural(noun);
+        return getNumeral(cnt) + " " + countedForm;
+    }
+
+    public static String nounWithNumeral(final String cnt, final String noun) {
+        if (StringUtils.isNumeric(cnt)) {
+            return nounWithNumeral(Integer.parseInt(cnt), noun);
+        } else {
+            // for X
+            return cnt + " " + getPlural(noun);
+        }
+    }
+
+    public static String nounWithNumeralExceptOne(final int cnt, final String noun) {
+        final String countedForm = cnt == 1 ? noun : getPlural(noun);
+        final String desc = cnt == 1 ? (Lang.startsWithVowel(countedForm) ? "an" : "a") : getNumeral(cnt);
+        return desc + " " + countedForm;
+    }
+
+    public static String nounWithNumeralExceptOne(final String cnt, final String noun) {
+        if (StringUtils.isNumeric(cnt)) {
+            return nounWithNumeralExceptOne(Integer.parseInt(cnt), noun);
+        } else {
+            // for X
+            return cnt + " " + getPlural(noun);
+        }
+    }
+
+    public abstract String getPossesive(final String name);
+
+    public abstract String getPossessedObject(final String owner, final String object);
+
+    public static boolean startsWithVowel(final String word) {
+        return isVowel(word.trim().charAt(0));
+    }
+
+    private static final Pattern VOWEL_PATTERN = Pattern.compile("[aeiou]", Pattern.CASE_INSENSITIVE);
+
+    public static boolean isVowel(final char letter) {
+        return VOWEL_PATTERN.matcher(String.valueOf(letter)).find();
+    }
+
+    public final static String[] numbers0 = new String[] {
+            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+            "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+            "nineteen" };
+    public final static String[] numbers20 = new String[] { "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+            "eighty", "ninety" };
+
+    public static String getNumeral(int n) {
+        final String prefix = n < 0 ? "minus " : "";
+        n = Math.abs(n);
+        if (n >= 0 && n < 20) {
+            return prefix + numbers0[n];
+        }
+        if (n < 100) {
+            final int n1 = n % 10;
+            final String ones = n1 == 0 ? "" : numbers0[n1];
+            return prefix + numbers20[(n / 10) - 2] + " " + ones;
+        }
+        return Integer.toString(n);
+    }
+
+    public String getNickName(final String name) {
+        if (name.contains(",")) {
+            return name.split(",")[0];
+        }
+        if (name.contains(":")) {
+            return name.split(":")[0];
+        }
+        final String[] words = name.split(" ");
+        // "Dr. Beverly Crusher" is not "Dr."
+        return words.length > 1 && words[0].endsWith(".") ? words[1] : words[0];
+    }
+
+    public String buildValidDesc(Collection<String> valid, boolean multiple) {
+        return buildValidDesc(valid, multiple ? "and/or" : "or");
+    }
+    public String buildValidDesc(Collection<String> valid, String join) {
+        return joinHomogenous(valid, s -> formatValidDesc(s), join);
+    }
+
+    /** Like {@link #buildValidDesc(Collection, boolean)}, with the card types described as cards ("land card you own"). */
+    public String buildValidCardDesc(Collection<String> valid, boolean multiple) {
+        return joinHomogenous(valid, s -> formatValidDesc(s, false, true), multiple ? "and/or" : "or");
+    }
+
+    public String formatValidDesc(String valid) {
+        return formatValidDesc(valid, false, false);
+    }
+
+    /** A comma separated Valid list ("Creature,Planeswalker") as words: "creature or planeswalker". */
+    public String describeValidList(final String valid) {
+        if (valid == null || valid.isEmpty()) {
+            return "permanent";
+        }
+        return joinHomogenous(java.util.Arrays.asList(VALID_COMMA_SEPARATOR.split(valid)),
+                v -> formatValidDesc(v), "or");
+    }
+
+    private static final Pattern VALID_SCRIPT = Pattern.compile("[A-Za-z]+([.+][A-Za-z0-9_]+)*");
+    private static final Pattern VALID_SHARES_COLOR = Pattern.compile("SharesColorWith Valid ?(\\w+)\\.([\\w.+!]+)");
+    private static final Pattern VALID_NAMED = Pattern.compile("(?<=[.+])(!?)named([^+]+?)(?=\\+|$|\\.(?:You|Opp|Other|non)\\w*(?:\\+|$))");
+    private static final Pattern VALID_CMC_LIKE = Pattern.compile("(cmc|power|toughness)(LE|GE|EQ|LT|GT|NE)(\\w+)");
+    private static final Pattern VALID_COMMA_SEPARATOR = Pattern.compile(",");
+    private static final Pattern VALID_AND_SEPARATOR = Pattern.compile(" & ");
+    private static final Pattern VALID_PART_SEPARATOR = Pattern.compile("[.+]");
+    private static final Pattern VALID_SPACE_BEFORE_CAPITAL =
+            Pattern.compile("(?<=\\w) (?=[A-Z]\\w*(?:[+.]|$))");
+    private static final Pattern VALID_BASE_OBJECT =
+            Pattern.compile("(?:Targeted|Triggered|Remembered|Imprinted|Enchanted|Equipped|Defined)\\w*");
+    private static final Pattern VALID_INTEGER = Pattern.compile("\\d+");
+    private static final List<String> COMMON_VALID_NAMES = List.of(
+            "Player", "Opponent", "Card", "Spell", "Permanent"
+    );
+    private static final List<String> VALID_ADJECTIVES = List.of("Basic", "Legendary", "Snow", "White", "Blue", "Black", "Red", "Green",
+            "Colorless", "Multicolor", "Monocolored", "Historic");
+
+    /**
+     * Turns a script "Valid" string ("Permanent.nonColorless", "Land.Basic", "Creature.Other+YouCtrl") into words
+     * ("colored permanent", "basic land", "other creature you control"). A string that is not a plain script string
+     * (several restrictions, variables, ...) comes back as it was.
+     *
+     * @param plural   the noun is made plural ("colored permanents")
+     * @param asCards  a card type as the noun gets "card" after it ("land card you own")
+     */
+    public String formatValidDesc(String valid, final boolean plural, final boolean asCards) {
+        // "EACH Card.White & Card.Blue": all of the descriptions at once, "white and blue card"; of different nouns each one
+        if (valid.startsWith("EACH ")) {
+            final String[] each = VALID_AND_SEPARATOR.split(valid.substring("EACH ".length()));
+            final List<String> nouns = Lists.newArrayList();
+            final List<String> adjectives = Lists.newArrayList();
+            for (final String e : each) {
+                final String d = formatValidDesc(e.trim(), plural, asCards);
+                final int at = d.lastIndexOf(' ');
+                nouns.add(at < 0 ? d : d.substring(at + 1));
+                adjectives.add(at < 0 ? "" : d.substring(0, at));
+            }
+            if (nouns.stream().distinct().count() == 1) {
+                final List<String> adj = adjectives.stream().filter(a -> !a.isEmpty()).collect(Collectors.toList());
+                return (adj.isEmpty() ? "" : joinHomogenous(adj, null, "and") + " ") + nouns.get(0);
+            }
+            return joinHomogenous(java.util.Arrays.stream(each).map(e -> formatValidDesc(e.trim(), plural, asCards)).collect(Collectors.toList()), null, "and");
+        }
+        // "Card.SharesColorWith ValidCreature.Legendary+YouCtrl": shares a color with a described object
+        final java.util.regex.Matcher shares = VALID_SHARES_COLOR.matcher(valid);
+        if (shares.find()) {
+            final String other = formatValidDesc(shares.group(1) + "." + shares.group(2));
+            final String described = formatValidDesc(valid.substring(0, shares.start()) + "SHARESREF" + valid.substring(shares.end()), plural, asCards);
+            return described.replace("SHARESREF", "that shares a color with " + (startsWithVowel(other) ? "an " : "a ") + other);
+        }
+        // a name has spaces and punctuation of its own: "Card.namedAjani; Valiant Protector+YouOwn"
+        final java.util.regex.Matcher named = VALID_NAMED.matcher(valid);
+        if (named.find()) {
+            final String name = named.group(2).replace(';', ',');
+            final boolean not = !named.group(1).isEmpty();
+            final String described = formatValidDesc(valid.substring(0, named.start()) + "NAMEDREF" + valid.substring(named.end()), plural, asCards);
+            return described.replace("NAMEDREF", (not ? "not named " : "named ") + name);
+        }
+        // "Creature.Artifact & Creature.nonArtifact": each of them
+        if (valid.contains(" & ")) {
+            final List<String> each = Lists.newArrayList();
+            for (final String e : VALID_AND_SEPARATOR.split(valid)) {
+                each.add(formatValidDesc(e.trim(), plural, asCards));
+            }
+            return joinHomogenous(each, null, "and");
+        }
+        if (!valid.contains(".") && !valid.contains("+")) {
+            if (COMMON_VALID_NAMES.contains(valid) || CardType.isACardType(valid)) {
+                valid = valid.toLowerCase();
+                if (plural && !valid.endsWith("s")) {
+                    valid = getPlural(valid);
+                }
+            }
+            return valid;
+        }
+        // "!token" is "nontoken"; a restriction with a defined object after a space ("ControlledBy TargetedOrController",
+        // "sharesNameWith ChosenCard") is one condition
+        valid = VALID_SPACE_BEFORE_CAPITAL.matcher(valid.replace("!", "non")).replaceAll("");
+        if (!VALID_SCRIPT.matcher(valid).matches()) {
+            return valid;
+        }
+        final String[] parts = VALID_PART_SEPARATOR.split(valid);
+        // "Targeted", "TriggeredCard", "Remembered": a game object named by the script, not a kind of card
+        if (VALID_BASE_OBJECT.matcher(parts[0]).matches()) {
+            parts[0] = "Card";
+        }
+        String noun = COMMON_VALID_NAMES.contains(parts[0]) || CardType.isACardType(parts[0]) ? parts[0].toLowerCase() : parts[0];
+        final List<String> adjectives = Lists.newArrayList();
+        final List<String> suffixes = Lists.newArrayList();
+        for (int i = 1; i < parts.length; i++) {
+            final String r = parts[i];
+            if (r.equals("nonColorless")) {
+                adjectives.add("colored");
+            } else if (r.equals("nonColored")) {
+                adjectives.add("colorless");
+            } else if (r.equals("Other") || r.equals("nonSelf")) {
+                adjectives.add("other");
+            } else if (r.length() > 3 && r.startsWith("non") && Character.isUpperCase(r.charAt(3))) {
+                adjectives.add("non" + r.substring(3).toLowerCase());
+            } else if (VALID_ADJECTIVES.contains(r)) {
+                adjectives.add(r.toLowerCase());
+            } else if (CardType.isACardType(r) && (noun.equals("card") || noun.equals("permanent"))) {
+                noun = r.toLowerCase();
+            } else if (CardType.isACardType(r)) {
+                adjectives.add(r.toLowerCase());
+            } else if (Character.isUpperCase(r.charAt(0)) && !r.endsWith("Ctrl") && !r.endsWith("Own") && !r.equals("Self")
+                    && (CardType.isASubType(r) || CardType.isASupertype(r))) {
+                adjectives.add(r);
+            } else if (r.equals("NAMEDREF")) {
+                suffixes.add("NAMEDREF");
+            } else if (r.startsWith("ControlledBy") && r.length() > "ControlledBy".length()) {
+                suffixes.add(r.endsWith("You") ? "you control" : "that player controls");
+            } else if (r.equalsIgnoreCase("multicolor")) {
+                adjectives.add("multicolored");
+            } else if (r.equals("SHARESREF")) {
+                suffixes.add("SHARESREF");
+            } else if (r.startsWith("SharesColorWith")) {
+                suffixes.add("that shares a color with it");
+            } else if (r.equals("ChosenColor")) {
+                suffixes.add("of the chosen color");
+            } else if (r.equals("ChosenType")) {
+                suffixes.add("of the chosen type");
+            } else if (r.startsWith("sharesNameWith")) {
+                suffixes.add(r.endsWith("ChosenCard") ? "with the same name as the chosen card" : "with the same name as it");
+            } else if (r.startsWith("doesNotShareNameWith")) {
+                suffixes.add("with a different name");
+            } else if (r.startsWith("sharesCreatureTypeWith")) {
+                suffixes.add(r.endsWith("Enchanted") ? "that shares a creature type with the enchanted creature" : "that shares a creature type with it");
+            } else if (r.equals("YouCtrl") || r.equals("YouCtrls")) {
+                suffixes.add("you control");
+            } else if (r.equals("OppCtrl")) {
+                suffixes.add("an opponent controls");
+            } else if (r.equals("YouOwn")) {
+                suffixes.add("you own");
+            } else if (r.equals("OppOwn")) {
+                suffixes.add("an opponent owns");
+            } else if (r.equals("tapped") || r.equals("untapped") || r.equals("attacking") || r.equals("blocking") || r.equals("token")
+                    || r.equals("nontoken")) {
+                adjectives.add(r);
+            } else if (r.startsWith("cmc") || r.startsWith("power") || r.startsWith("toughness")) {
+                final java.util.regex.Matcher m = VALID_CMC_LIKE.matcher(r);
+                if (m.matches() && (VALID_INTEGER.matcher(m.group(3)).matches() || "X".equals(m.group(3)))) {
+                    final String what = m.group(1).equals("cmc") ? "mana value" : m.group(1);
+                    final String how;
+                    switch (m.group(2)) {
+                        case "LE": how = " or less"; break;
+                        case "GE": how = " or greater"; break;
+                        case "LT": how = " less than "; break;
+                        case "GT": how = " greater than "; break;
+                        default: how = "";
+                    }
+                    suffixes.add(m.group(2).equals("NE") ? "without " + what + " " + m.group(3)
+                            : how.endsWith(" ") ? "with " + what + how + m.group(3) : "with " + what + " " + m.group(3) + how);
+                }
+            }
+            // anything else is a condition the words cannot carry: left out
+        }
+        if (asCards && CardType.isACardType(StringUtils.capitalize(noun)) && !noun.equals("card") && !noun.equals("permanent") && !noun.equals("spell")) {
+            noun = noun + " card";
+        }
+        if (plural) {
+            noun = getPlural(noun);
+        }
+        final List<String> words = Lists.newArrayList(adjectives);
+        words.add(noun);
+        words.addAll(suffixes);
+        return String.join(" ", words);
+    }
+}

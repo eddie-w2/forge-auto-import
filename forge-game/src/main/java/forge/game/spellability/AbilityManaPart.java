@@ -1,0 +1,944 @@
+/*
+ * Forge: Play Magic: the Gathering.
+ * Copyright (C) 2011  Forge Team
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package forge.game.spellability;
+
+import com.google.common.collect.HashMultiset;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Multiset;
+import com.google.common.collect.Sets;
+
+import forge.card.ColorSet;
+import forge.card.GamePieceType;
+import forge.card.MagicColor;
+import forge.card.mana.ManaAtom;
+import forge.card.mana.ManaCostShard;
+import forge.game.Game;
+import forge.game.GameActionUtil;
+import forge.game.IHasSVars;
+import forge.game.ability.AbilityKey;
+import forge.game.ability.AbilityUtils;
+import forge.game.ability.ApiType;
+import forge.game.ability.SpellAbilityEffect;
+import forge.game.ability.effects.ManaEffect;
+import forge.game.ability.effects.ReplaceManaEffect;
+import forge.game.card.Card;
+import forge.game.card.CardCopyService;
+import forge.game.card.CardUtil;
+import forge.game.cost.Cost;
+import forge.game.cost.CostPartMana;
+import forge.game.cost.CostTap;
+import forge.game.mana.Mana;
+import forge.game.mana.ManaPool;
+import forge.game.player.Player;
+import forge.game.replacement.ReplacementEffect;
+import forge.game.replacement.ReplacementHandler;
+import forge.game.replacement.ReplacementLayer;
+import forge.game.replacement.ReplacementType;
+import forge.game.trigger.Trigger;
+import forge.game.trigger.TriggerHandler;
+import forge.game.trigger.TriggerType;
+import forge.game.zone.Zone;
+import forge.game.zone.ZoneType;
+import forge.util.TextUtil;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
+
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/**
+ * <p>
+ * Abstract AbilityMana class.
+ * </p>
+ *
+ * @author Forge
+ * @version $Id$
+ */
+public class AbilityManaPart implements java.io.Serializable {
+
+    private static final long serialVersionUID = -6816356991224950520L;
+
+    private final String origProduced;
+    private String lastExpressChoice = "";
+    private final String manaRestrictions;
+    private String extraManaRestrictions = "";
+    private final String cannotCounterSpell;
+    private final String addsKeywords;
+    private final String addsKeywordsType;
+    private final String addsKeywordsUntil;
+    private final String addsCounters;
+    private final String triggersWhenSpent;
+    private final boolean persistentMana;
+    private final boolean combatMana;
+
+    private transient Multiset<Mana> lastManaProduced = HashMultiset.create();
+
+    private transient Card sourceCard;
+    private transient IHasSVars sVarHolder;
+
+
+    // Spells paid with this mana spell can't be countered.
+
+    /**
+     * <p>
+     * Dev Mode Constructor for AbilityMana.
+     * </p>
+     */
+    public AbilityManaPart(final SpellAbility sourceSA, final Map<String, String> params) {
+        this(sourceSA.getHostCard(), params);
+        sVarHolder = sourceSA;
+    }
+    public AbilityManaPart(final Card sourceCard, final Map<String, String> params) {
+        this.sourceCard = sourceCard;
+        sVarHolder = sourceCard;
+
+        origProduced = params.getOrDefault("Produced", "1");
+        this.manaRestrictions = params.getOrDefault("RestrictValid", "");
+        this.cannotCounterSpell = params.get("AddsNoCounter");
+        this.addsKeywords = params.get("AddsKeywords");
+        this.addsKeywordsType = params.get("AddsKeywordsValid");
+        this.addsKeywordsUntil = params.get("AddsKeywordsUntil");
+        this.addsCounters = params.get("AddsCounters");
+        this.triggersWhenSpent = params.get("TriggersWhenSpent");
+        this.persistentMana = params.containsKey("PersistentMana");
+        this.combatMana = params.containsKey("CombatMana");
+    }
+
+    public AbilityManaPart(final Card newSource, AbilityManaPart oldMana) {
+        this.sourceCard = newSource;
+        this.origProduced = oldMana.origProduced;
+        this.manaRestrictions = oldMana.manaRestrictions;
+        this.cannotCounterSpell = oldMana.cannotCounterSpell;
+        this.addsKeywords = oldMana.addsKeywords;
+        this.addsKeywordsType = oldMana.addsKeywordsType;
+        this.addsKeywordsUntil = oldMana.addsKeywordsUntil;
+        this.addsCounters = oldMana.addsCounters;
+        this.triggersWhenSpent = oldMana.triggersWhenSpent;
+        this.persistentMana = oldMana.persistentMana;
+        this.combatMana = oldMana.combatMana;
+        // Do we need to copy over last mana produced somehow? Its kinda gross
+    }
+
+    /**
+     * <p>
+     * produceMana.
+     * </p>
+     * @param sa
+     */
+    public final void produceMana(SpellAbility sa) {
+        this.produceMana(this.getOrigProduced(), this.getSourceCard().getController(), sa);
+    }
+
+    /**
+     * <p>
+     * produceMana.
+     * </p>
+     *
+     * @param produced
+     *            a {@link java.lang.String} object.
+     * @param player
+     *            a {@link forge.game.player.Player} object.
+     * @param sa
+     *
+     */
+    public final String produceMana(final String produced, final Player player, SpellAbility sa) {
+        final Card source = this.getSourceCard();
+        final ManaPool manaPool = player.getManaPool();
+        final Game game = player.getGame();
+        String afterReplace = produced;
+
+        SpellAbility root = sa == null ? null : sa.getRootAbility();
+
+        if (root != null) {
+            final Map<AbilityKey, Object> repParams = produceManaParams(source, player, root, root.getActivatingPlayer());
+            repParams.put(AbilityKey.Mana, afterReplace);
+
+            switch (game.getReplacementHandler().run(ReplacementType.ProduceMana, repParams)) {
+            case NotReplaced:
+                break;
+            case Updated:
+                afterReplace = (String) repParams.get(AbilityKey.Mana);
+                break;
+            default:
+                return "";
+            }
+        }
+
+        //clear lastProduced
+        this.lastManaProduced.clear();
+
+        // TODO use MagicColor
+        Map<Byte, Mana> manaHolder = Maps.newHashMap();
+
+        // loop over mana produced string
+        for (final String c : afterReplace.split(" ")) {
+            if (StringUtils.isNumeric(c)) {
+                this.lastManaProduced.add(manaHolder.computeIfAbsent((byte) ManaAtom.COLORLESS, b -> new Mana(b, source, this, player)), Integer.parseInt(c));
+            } else {
+                byte attemptedMana = MagicColor.fromName(c);
+                if (attemptedMana == 0) {
+                    attemptedMana = (byte)ManaAtom.COLORLESS;
+                }
+
+                this.lastManaProduced.add(manaHolder.computeIfAbsent(attemptedMana, b -> new Mana(b, source, this, player)));
+            }
+        }
+
+        manaPool.addMana(this.lastManaProduced);
+
+        final Map<AbilityKey, Object> runParams = AbilityKey.mapFromCard(source);
+        runParams.put(AbilityKey.Player, player);
+        runParams.put(AbilityKey.Produced, afterReplace);
+        runParams.put(AbilityKey.AbilityMana, root);
+        runParams.put(AbilityKey.Activator, root == null ? null : root.getActivatingPlayer());
+
+        game.getTriggerHandler().runTrigger(TriggerType.ManaAdded, runParams, false);
+
+        return afterReplace;
+    }
+
+    public void tapsForMana(final SpellAbility root, String mana) {
+        if (!root.isManaAbility() || root.getPayCosts() == null || !root.getPayCosts().hasTapCost()) {
+            return;
+        }
+
+        if (getSourceCard().isLand()) {
+            root.getActivatingPlayer().setTappedLandForManaThisTurn(true);
+        }
+
+        final Map<AbilityKey, Object> runParams = AbilityKey.mapFromCard(getSourceCard());
+        runParams.put(AbilityKey.Produced, mana);
+        runParams.put(AbilityKey.AbilityMana, root);
+        runParams.put(AbilityKey.Activator, root.getActivatingPlayer());
+
+        getSourceCard().getGame().getTriggerHandler().runTrigger(TriggerType.TapsForMana, runParams, false);
+    }
+
+    /**
+     * <p>
+     * cannotCounterPaidWith.
+     * </p>
+     * @param saBeingPaid
+     *
+     * @return a {@link java.lang.String} object.
+     */
+    public boolean cannotCounterPaidWith(SpellAbility saBeingPaid) {
+        if (null == cannotCounterSpell) return false;
+        if ("True".equalsIgnoreCase(cannotCounterSpell)) return true;
+
+        Card source = saBeingPaid.getHostCard();
+        if (source == null) return false;
+        return source.isValid(cannotCounterSpell, sourceCard.getController(), sourceCard, null);
+    }
+
+    public boolean isCannotCounterPaidWith() {
+        return null != cannotCounterSpell;
+    }
+
+    public void addNoCounterEffect(SpellAbility saBeingPaid) {
+        final Game game = sourceCard.getGame();
+        final Card eff = new Card(game.nextCardId(), game);
+        eff.setGameTimestamp(game.getNextTimestamp());
+        eff.setName(sourceCard + "'s Effect");
+        eff.setOwner(sourceCard.getController());
+
+        eff.setImageKey(sourceCard.getImageKey());
+        eff.setColor(ColorSet.C);
+        eff.setGamePieceType(GamePieceType.EFFECT);
+
+        String cantcounterstr = "Event$ Counter | ValidSA$ Spell.IsRemembered | Description$ That spell can't be countered.";
+        ReplacementEffect re = ReplacementHandler.parseReplacement(cantcounterstr, eff, true);
+        re.setLayer(ReplacementLayer.CantHappen);
+        eff.addReplacementEffect(re);
+
+        eff.addRemembered(saBeingPaid.getHostCard());
+
+        SpellAbilityEffect.addForgetOnMovedTrigger(eff, "Stack");
+
+        game.getAction().moveToCommand(eff, null);
+    }
+
+    /**
+     * <p>
+     * addKeywords.
+     * </p>
+     * @param saBeingPaid
+     *
+     * @return a {@link java.lang.String} object.
+     */
+    public boolean addKeywords(SpellAbility saBeingPaid) {
+        return this.addsKeywords != null;
+    }
+
+    public String getAddsKeywordsType() {
+        return addsKeywordsType;
+    }
+
+    public String getAddsKeywordsUntil() {
+        return addsKeywordsUntil;
+    }
+
+    /**
+     * <p>
+     * getKeywords.
+     * </p>
+     *
+     * @return a {@link java.lang.String} object.
+     */
+    public String getKeywords() {
+        return this.addsKeywords;
+    }
+
+    /**
+     * <p>
+     * addsCounters.
+     * </p>
+     * @param saBeingPaid
+     *
+     * @return a {@link java.lang.String} object.
+     */
+    public boolean addsCounters(SpellAbility saBeingPaid) {
+        return this.addsCounters != null;
+    }
+
+    /**
+     * createETBCounters
+     */
+    public void createETBCounters(Card c, Player controller) {
+        String[] parse = this.addsCounters.split("_");
+        // Convert random SVars if there are other cards with this effect
+        if (c.isValid(parse[0], c.getController(), c, null)) {
+            GameActionUtil.createETBCountersEffect(sourceCard, c, controller, parse[1], parse[2]);
+        }
+    }
+
+    public boolean getTriggersWhenSpent() {
+        return this.triggersWhenSpent != null;
+    }
+
+    public void addTriggersWhenSpent(SpellAbility saBeingPaid) {
+        Trigger trig = TriggerHandler.parseTrigger(sVarHolder.getSVar(this.triggersWhenSpent), sourceCard, false, sVarHolder);
+        trig.addRemembered(saBeingPaid);
+        if (getSourceSA() != null) {
+            trig.setSpawningAbility(getSourceSA());
+        }
+        saBeingPaid.getHostCard().getGame().getTriggerHandler().registerThisTurnDelayedTrigger(trig);
+    }
+
+    public SpellAbility getSourceSA() {
+        return sVarHolder instanceof SpellAbility ? (SpellAbility) sVarHolder : null;
+    }
+
+    /**
+     * <p>
+     * getManaRestrictions.
+     * </p>
+     *
+     * @return a {@link java.lang.String} object.
+     */
+    public String getManaRestrictions() {
+        return manaRestrictions;
+    }
+
+    public void setExtraManaRestriction(String str) {
+        this.extraManaRestrictions = str;
+    }
+
+    public String getExtraManaRestriction() {
+        return extraManaRestrictions;
+    }
+
+    public boolean meetsManaRestrictions(final SpellAbility sa) {
+        return meetsManaRestrictions(sa, this.manaRestrictions) && meetsManaRestrictions(sa, this.extraManaRestrictions);
+    }
+
+    /**
+     * <p>
+     * meetsManaRestrictions.
+     * </p>
+     *
+     * @param sa
+     *            a {@link forge.game.spellability.SpellAbility} object.
+     * @return a boolean.
+     */
+    public boolean meetsManaRestrictions(final SpellAbility sa, String restrictions) {
+        // No restrictions
+        if (restrictions.isEmpty()) {
+            return true;
+        }
+
+        // Loop over restrictions
+        for (String restriction : restrictions.split(",")) {
+            if (restriction.equals("nonSpell")) {
+                return !sa.isSpell();
+            }
+
+            if (restriction.equals("CumulativeUpkeep")) {
+                if (sa.isCumulativeUpkeep()) {
+                    return true;
+                }
+                continue;
+            }
+
+            if (restriction.startsWith("CostContains")) {
+                Game game = sa.getHostCard().getGame();
+                Cost payment = sa.getPayCosts();
+                if (game.getStack().isResolving() && sa.hasParam("UnlessCost")) {
+                    payment = AbilityUtils.calculateUnlessCost(sa, sa.getParam("UnlessCost"), false);
+                }
+                if (payment.hasNoManaCost()) {
+                    continue;
+                }
+                // TODO Thassa's Intervention with "twice {X}" is tricky
+                // TODO Volcano Hellion can't be handled without refactor to just have it passed down directly
+                if (restriction.endsWith("X") && payment.getCostMana().getAmountOfX() > 0) {
+                    return true;
+                }
+                if (restriction.endsWith("C") && payment.getCostMana().getMana().getShardCount(ManaCostShard.COLORLESS) > 0) {
+                    return true;
+                }
+                continue;
+            }
+
+            //handled in meetsManaShardRestrictions
+            if (restriction.equals("CantPayGenericCosts")) {
+                return true;
+            }
+
+            // "can't" zone restriction – shouldn't be mixed with other restrictions
+            if (restriction.startsWith("CantCastSpellFrom")) {
+                if (!sa.isSpell()) {
+                    return true;
+                }
+                final ZoneType badZone = ZoneType.smartValueOf(restriction.substring(17));
+                final Card host = sa.getHostCard();
+                final Zone castFrom = host.getCastFrom();
+                //ComputerUtilMana looks at this to see if AI can cast things, so need a fallback zone
+                final ZoneType zone = castFrom == null ? host.getZone().getZoneType() : castFrom.getZoneType();
+                if (!badZone.equals(zone)) {
+                    return true;
+                }
+            }
+
+            if (restriction.equals("CantCastNonArtifactSpells")) {
+                return !sa.isSpell() || sa.getHostCard().isArtifact();
+            }
+
+            // TODO refactor to differ between ForCost and ForEffect
+            // the payment is for a resolving SA, currently no other restrictions would allow that
+            if (getSourceCard().getGame().getStack().getInstanceMatchingSpellAbilityID(sa.getRootAbility()) != null) {
+                return false;
+            }
+
+            if (sa.isValid(restriction, this.getSourceCard().getController(), this.getSourceCard(), null)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * <p>
+     * meetsManaShardRestrictions.
+     * </p>
+     *
+     * @param shard
+     *            a {@link forge.card.mana.ManaCostShard} object.
+     * @param color
+     *               the color of mana being paid
+     * @return a boolean.
+     */
+    public boolean meetsManaShardRestrictions(final ManaCostShard shard, final byte color) {
+        if (this.manaRestrictions.isEmpty()) {
+            return true;
+        }
+        for (String restriction : this.manaRestrictions.split(",")) {
+            if (restriction.equals("CantPayGenericCosts")) {
+                if (shard.isGeneric()) {
+                    if (shard.isOr2Generic() && shard.isColor(color)) {
+                        continue;
+                    } else {
+                        return false;
+                    }
+                } else {
+                    continue;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * <p>
+     * meetsSpellAndShardRestrictions.
+     * </p>
+     *
+     * @param sa
+     *            a {@link forge.game.spellability.SpellAbility} object.
+     * @param shard
+     *            a {@link forge.card.mana.ManaCostShard} object.
+     * @param color
+     *               the color of mana being paid
+     * @return a boolean.
+     */
+    public boolean meetsSpellAndShardRestrictions(final SpellAbility sa, final ManaCostShard shard, final byte color) {
+        return this.meetsManaRestrictions(sa) && this.meetsManaShardRestrictions(shard, color);
+    }
+
+    /**
+     * <p>
+     * mana.
+     * </p>
+     *
+     * @return a {@link java.lang.String} object.
+     */
+    public final String mana(SpellAbility sa) {
+        if (isComboMana()) {
+            return getComboColors(sa);
+        }
+        String produced = this.getOrigProduced();
+        if (produced.contains("Chosen")) {
+            // before the ability chooses its color, use the color that the payment picked
+            produced = produced.replace("Chosen", choosesColorOnResolution(sa) ? getExpressChoice() : getChosenColor(sa));
+        }
+        if (isSpecialMana()) {
+            ManaEffect.handleSpecialMana(sa.getActivatingPlayer(), this, sa, false);
+            produced = getExpressChoice();
+        }
+        return produced;
+    }
+
+    private static Map<AbilityKey, Object> produceManaParams(final Card source, final Player player, final SpellAbility root, final Player activator) {
+        final Map<AbilityKey, Object> repParams = AbilityKey.mapFromAffected(source);
+        repParams.put(AbilityKey.Player, player);
+        repParams.put(AbilityKey.AbilityMana, root);
+        repParams.put(AbilityKey.Activator, activator);
+        return repParams;
+    }
+
+    /**
+     * CR 106.7: the types of mana this would add if it resolved now, after replacement effects applied in any order.
+     * @param reflected the colors a ManaReflected ability chooses from, null for other abilities
+     */
+    public final Set<String> couldProduce(final SpellAbility sa, final Iterable<String> reflected) {
+        final Set<String> types = Sets.newHashSet();
+        final Card source = sa.getHostCard();
+        final Player controller = source.getController();
+        final SpellAbility root = sa.getRootAbility();
+        // an effect can ask who controls the ability, which nobody has activated yet
+        if (root.getActivatingPlayer() == null) {
+            root.setActivatingPlayer(controller);
+        }
+        final Map<AbilityKey, Object> repParams = produceManaParams(source, controller, root, controller);
+        // with no mana given yet, this finds the effects whatever amount they need
+        final List<ReplacementEffect> effects = source.getGame().getReplacementHandler()
+                .getReplacementList(ReplacementType.ProduceMana, repParams, ReplacementLayer.Other);
+
+        // effects that only multiply the mana leave its types alone, so with no other effect there is nothing to search
+        if (Iterables.all(effects, effect -> ReplaceManaEffect.onlyChangesAmount(effect.ensureAbility()))) {
+            effects.clear();
+        }
+
+        final List<String> options = manaOptions(sa, reflected);
+        for (final byte color : MagicColor.WUBRGC) {
+            final Set<Pair<String, Set<ReplacementEffect>>> tried = Sets.newHashSet();
+            for (final String mana : options) {
+                if (couldBecome(color, mana, repParams, effects, tried)) {
+                    types.add(MagicColor.toLongString(color));
+                    break;
+                }
+            }
+        }
+        return types;
+    }
+
+    /** Each mana string this would add if it resolved now, one for each choice it offers. */
+    private List<String> manaOptions(final SpellAbility sa, final Iterable<String> reflected) {
+        final List<String> options = Lists.newArrayList();
+        if (reflected == null && !isComboMana() && choosesColorOnResolution(sa)) {
+            final int[] amounts = amountsIfChosen(sa);
+            for (int i = 0; i < amounts.length; i++) {
+                addOption(options, getOrigProduced().replace("Chosen", MagicColor.toShortString(MagicColor.WUBRG[i])), amounts[i]);
+            }
+            return options;
+        }
+        // an amount that is only set as the ability is activated or resolves counts as at least one
+        final int amount = amountIsSettled(sa) ? sa.amountOfManaGenerated(false) : Math.max(1, sa.amountOfManaGenerated(false));
+        final Iterable<String> choices = reflected != null ? Iterables.transform(reflected, MagicColor::toShortString)
+                : isComboMana() ? List.of(getComboColors(sa).split(" "))
+                : isAnyMana() ? List.of("W", "U", "B", "R", "G")
+                : List.of(mana(sa));
+        for (final String choice : choices) {
+            addOption(options, choice, amount);
+        }
+        return options;
+    }
+
+    /** Whether nothing can still set the amount: no trigger event, no earlier part of the ability, and no cost beyond tapping and fixed mana. */
+    private static boolean amountIsSettled(final SpellAbility sa) {
+        final Cost cost = sa.getPayCosts();
+        return sa.getParent() == null && !sa.isTrigger() && cost != null && !cost.hasXInAnyCostPart()
+                && cost.getCostParts().stream().allMatch(part -> part instanceof CostTap || part instanceof CostPartMana);
+    }
+
+    private static void addOption(final List<String> options, final String mana, final int amount) {
+        if (amount > 0 && !mana.isEmpty()) {
+            options.add(StringUtils.repeat(mana, " ", amount));
+        }
+    }
+
+    /** Whether the ability chooses the color of its "Chosen" mana on resolution and has not chosen it yet. */
+    public boolean choosesColorOnResolution(final SpellAbility sa) {
+        return getOrigProduced().contains("Chosen") && !sa.getHostCard().hasChosenColor() && choosesColor(sa);
+    }
+
+    /** The amount the ability adds if it chooses this color. A color of 0 gives the amount with no color chosen. */
+    public int amountIfChosen(final SpellAbility sa, final byte color) {
+        final String amount = sa.getParamOrDefault("Amount", "1");
+        if (color == 0 || !sa.getSVar(amount).contains("Chosen")) {
+            return AbilityUtils.calculateAmount(sa.getHostCard(), amount, sa);
+        }
+        return amountWithChosenColor(CardCopyService.getLKICopy(sa.getHostCard()), amount, sa, color);
+    }
+
+    /** The amount the ability adds for each color it can choose, in {@link MagicColor#WUBRG} order, from a single copy of the host. */
+    public int[] amountsIfChosen(final SpellAbility sa) {
+        final String amount = sa.getParamOrDefault("Amount", "1");
+        final int[] amounts = new int[MagicColor.WUBRG.length];
+        if (!sa.getSVar(amount).contains("Chosen")) {
+            Arrays.fill(amounts, AbilityUtils.calculateAmount(sa.getHostCard(), amount, sa));
+            return amounts;
+        }
+        final Card copy = CardCopyService.getLKICopy(sa.getHostCard());
+        for (int i = 0; i < amounts.length; i++) {
+            amounts[i] = amountWithChosenColor(copy, amount, sa, MagicColor.WUBRG[i]);
+        }
+        return amounts;
+    }
+
+    private static int amountWithChosenColor(final Card copy, final String amount, final SpellAbility sa, final byte color) {
+        copy.setChosenColors(Lists.newArrayList(MagicColor.toLongString(color)));
+        return AbilityUtils.calculateAmount(copy, amount, sa);
+    }
+
+    private static boolean choosesColor(final SpellAbility sa) {
+        for (SpellAbility parent = sa.getParent(); parent != null; parent = parent.getParent()) {
+            if (parent.getApi() == ApiType.ChooseColor) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether some order of the effects not yet applied turns the mana into one that has the color.
+     * @param tried the mana and unapplied effects already looked at for the color, which different orders reach again
+     */
+    private static boolean couldBecome(final byte color, final String mana, final Map<AbilityKey, Object> repParams,
+            final List<ReplacementEffect> unapplied, final Set<Pair<String, Set<ReplacementEffect>>> tried) {
+        if (!tried.add(Pair.of(mana, ImmutableSet.copyOf(unapplied)))) {
+            return false;
+        }
+        repParams.put(AbilityKey.Mana, mana);
+        final List<ReplacementEffect> applicable = Lists.newArrayList(Iterables.filter(unapplied, effect -> effect.canReplace(repParams)));
+        if (applicable.isEmpty()) {
+            return Arrays.stream(mana.split(" ")).anyMatch(part -> MagicColor.fromName(part) == color);
+        }
+        // an effect that has its controller choose a color gets the one looked for, or each color in turn for colorless
+        final byte[] choices = color == MagicColor.COLORLESS ? MagicColor.WUBRG : new byte[] { color };
+        for (final ReplacementEffect effect : applicable) {
+            final List<ReplacementEffect> rest = Lists.newArrayList(unapplied);
+            rest.remove(effect);
+            final Set<String> replaced = Sets.newHashSet();
+            for (final byte choice : choices) {
+                replaced.add(ReplaceManaEffect.replaceMana(effect.ensureAbility(), mana, MagicColor.toShortString(choice)));
+            }
+            for (final String next : replaced) {
+                if (couldBecome(color, next, repParams, rest, tried)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * <p>
+     * setAnyChoice.
+     * </p>
+     *
+     * @param s a {@link java.lang.String} object.
+     */
+    public void setExpressChoice(String s) {
+        this.lastExpressChoice = s;
+    }
+
+    public void setExpressChoice(ColorSet cs) {
+        StringBuilder sb = new StringBuilder();
+        if(cs.hasBlack()) sb.append("B ");
+        if(cs.hasBlue()) sb.append("U ");
+        if(cs.hasWhite()) sb.append("W ");
+        if(cs.hasRed()) sb.append("R ");
+        if(cs.hasGreen()) sb.append("G ");
+        this.lastExpressChoice = sb.toString().trim();
+    }
+
+    /**
+     * <p>
+     * Getter for the field <code>lastAnyChoice</code>.
+     * </p>
+     *
+     * @return a {@link java.lang.String} object.
+     */
+    public String getExpressChoice() {
+        return this.lastExpressChoice;
+    }
+
+    /**
+     * <p>
+     * clearExpressChoice.
+     * </p>
+     *
+     */
+    public void clearExpressChoice() {
+        this.lastExpressChoice = "";
+    }
+
+    /**
+     * <p>
+     * Getter for the field <code>lastProduced</code>.
+     * </p>
+     *
+     * @return a {@link java.lang.String} object.
+     */
+    public Collection<Mana> getLastManaProduced() {
+        return this.lastManaProduced;
+    }
+
+    public final boolean isSnow() {
+        return this.getSourceCard().isSnow();
+    }
+
+    public boolean isAnyMana() {
+        return this.getOrigProduced().contains("Any");
+    }
+    public boolean isComboMana() {
+        return this.getOrigProduced().startsWith("Combo");
+    }
+    public boolean isSpecialMana() {
+        return this.getOrigProduced().contains("Special");
+    }
+
+    /**
+     * <p>
+     * canProduce.
+     * </p>
+     *
+     * @param s
+     *            a {@link java.lang.String} object.
+     * @return a boolean.
+     */
+    public final boolean canProduce(final String s, final SpellAbility sa) {
+        // TODO: need to handle replacement effects like 106.7 before deciding no mana is produced
+        //if (sa.amountOfManaGenerated(false) == 0) {
+        //    return false;
+        //}
+
+        // Any mana never means Colorless?
+        if (isAnyMana() && !s.equals("C")) {
+            return true;
+        }
+
+        return mana(sa).contains(s);
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public final boolean equals(final Object o) {
+        // Mana abilities with same Descriptions are "equal"
+        if (!(o instanceof AbilityManaPart)) {
+            return false;
+        }
+
+        final AbilityManaPart abm = (AbilityManaPart) o;
+
+        return sourceCard.equals(abm.sourceCard) && origProduced.equals(abm.getOrigProduced());
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public int hashCode() {
+        return (41 * (41 + this.getSourceCard().hashCode()));
+    }
+
+    /**
+     * @return the origProduced
+     */
+    public String getOrigProduced() {
+        return origProduced;
+    }
+
+    /**
+     * @return the color available in combination mana
+     */
+    public String getComboColors(SpellAbility sa) {
+        if (!isComboMana()) {
+            return "";
+        }
+        if (isAnyMana()) {
+            return "W U B R G";
+        }
+        String origProduced = getOrigProduced();
+        // replace Chosen for Combo colors
+        if (origProduced.contains("Chosen")) {
+            origProduced = origProduced.replace("Chosen", getChosenColor(sa));
+        }
+        // replace Chosen for Spire colors
+        if (origProduced.contains("ColorID")) {
+            String str = sa.getHostCard().getMarkedColors().stream().map(c -> c.getShortName()).collect(Collectors.joining(" "));
+            origProduced = origProduced.replace("ColorID", str);
+        }
+        if (origProduced.contains("NotedColors")) {
+            // Should only be used for Paliano, the High City
+            if (sa.getActivatingPlayer() == null) {
+                return "";
+            }
+
+            String colors = sa.getActivatingPlayer().getDraftNotes().get("Paliano, the High City");
+            if (colors == null) {
+                return "";
+            }
+            // Colors here is an comma separated color list, potentially with duplicates
+            // We need to remove duplicates and convert to single letters
+            StringBuilder sb = new StringBuilder();
+            for (String color : colors.split(",")) {
+                String shortColor = MagicColor.toShortString(color);
+                if (sb.indexOf(shortColor) == -1) {
+                    sb.append(shortColor).append(" ");
+                }
+            }
+            origProduced = origProduced.replace("NotedColors", sb.toString().trim());
+        }
+
+        if (!origProduced.contains("ColorIdentity")) {
+            return TextUtil.fastReplace(origProduced, "Combo ", "");
+        }
+        // ColorIdentity
+        StringBuilder sb = new StringBuilder();
+        if (getSourceCard().getController() != null) {
+            List<Card> commanders = getSourceCard().getController().getCommanders();
+            if (commanders.isEmpty()) {
+                return "";
+            }
+            ColorSet identity = getSourceCard().getController().getCommanderColorID();
+            if (identity.hasWhite()) { sb.append("W "); }
+            if (identity.hasBlue())  { sb.append("U "); }
+            if (identity.hasBlack()) { sb.append("B "); }
+            if (identity.hasRed())   { sb.append("R "); }
+            if (identity.hasGreen()) { sb.append("G "); }
+        }
+        // TODO: Add support for {C}.
+        return sb.length() == 0 ? "" : sb.substring(0, sb.length() - 1);
+    }
+
+    public String getChosenColor(SpellAbility sa) {
+        if (sa == null) {
+            return "";
+        }
+        Card card = sa.getHostCard();
+        if (card != null) {
+            StringBuilder values = new StringBuilder();
+            for (String c : card.getChosenColors()) {
+                values.append(MagicColor.toShortString(c)).append(" ");
+            }
+            return values.toString().trim();
+        }
+        return "";
+    }
+
+    public Card getSourceCard() {
+        return sourceCard;
+    }
+    public void setSourceCard(final Card host) {
+        sourceCard = host;
+    }
+
+    /**
+     * <p>
+     * isPersistentMana.
+     * </p>
+     *
+     * @return a boolean.
+     */
+    public boolean isPersistentMana() {
+        return this.persistentMana;
+    }
+    public boolean isCombatMana() {
+        return this.combatMana;
+    }
+
+    boolean abilityProducesManaColor(final SpellAbility am, final byte neededColor) {
+        if (0 != (neededColor & ManaAtom.GENERIC)) {
+            return true;
+        }
+
+        if (isAnyMana()) {
+            return true;
+        }
+
+        // check for produce mana replacement effects - they mess this up, so just use the mana ability
+        final Card source = am.getHostCard();
+        final Player activator = am.getActivatingPlayer();
+        final Map<AbilityKey, Object> repParams = produceManaParams(source, activator, am.getRootAbility(), activator);
+        repParams.put(AbilityKey.Mana, getOrigProduced());
+
+        if (!source.getGame().getReplacementHandler().getReplacementList(ReplacementType.ProduceMana, repParams, ReplacementLayer.Other).isEmpty()) {
+            return true;
+        }
+
+        if (am.getApi() == ApiType.ManaReflected) {
+            final Iterable<String> reflectableColors = CardUtil.getReflectableManaColors(am);
+            for (final String color : reflectableColors) {
+                if (0 != (neededColor & ManaAtom.fromName(color))) {
+                    return true;
+                }
+            }
+        } else {
+            // treat special mana if it always can be paid
+            if (isSpecialMana()) {
+                return true;
+            }
+            String colorsProduced = mana(am);
+            for (final String color : colorsProduced.split(" ")) {
+                if (0 != (neededColor & ManaAtom.fromName(color))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+}
