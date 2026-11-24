@@ -36,7 +36,7 @@ public final class FMoxfieldFlow {
         final List<String> options = List.of(
                 loc.getMessage("lblMoxfieldImportSelected"),
                 loc.getMessage("lblMoxfieldRefreshCount", String.valueOf(linkedCount)),
-                loc.getMessage("lblMoxfieldUsername"),
+                loc.getMessage("lblMoxfieldChangeProfile"),
                 loc.getMessage("lblCancel"));
         FOptionPane.showOptionDialog(loc.getMessage("lblMoxfieldProfile", linked), loc.getMessage("lblMoxfieldDecks"), null, options, 0, choice -> {
             if (choice == null) {

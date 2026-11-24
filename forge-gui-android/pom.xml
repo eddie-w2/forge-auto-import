@@ -843,6 +843,7 @@
             <id>android-autoimport-build</id>
             <properties>
                 <app.id.autoimport>forge.app.autoimport</app.id.autoimport>
+                <app.build>0</app.build>
                 <packaging.type>apk</packaging.type>
             </properties>
             <build>
@@ -920,7 +921,7 @@
                                     <goal>manifest-merger</goal>
                                 </goals>
                                 <configuration>
-                                    <manifestVersionName>${snapshot-version}-autoimport</manifestVersionName>
+                                    <manifestVersionName>${snapshot-version}-autoimport.${app.build}</manifestVersionName>
                                 </configuration>
                             </execution>
                             <execution>

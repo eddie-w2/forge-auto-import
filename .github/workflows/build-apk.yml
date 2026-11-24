@@ -3,6 +3,9 @@ name: Build Forge Auto Import APK
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -39,7 +42,7 @@ jobs:
           export DISPLAY=":1"
           Xvfb :1 -screen 0 800x600x8 &
           mvn -B -P android-autoimport-build -pl forge-gui-android -am verify \
-            -Dandroid.sdk.path=$ANDROID_SDK_ROOT -Dandroid.buildToolsVersion=35.0.0 -Dmaven.test.skip=true
+            -Dandroid.sdk.path=$ANDROID_SDK_ROOT -Dandroid.buildToolsVersion=35.0.0 -Dmaven.test.skip=true -Dapp.build=${{ github.run_number }}
 
       - name: Sign
         run: |
@@ -55,6 +58,36 @@ jobs:
             java -jar forge-gui-android/tools/uber-apk-signer.jar -a out --allowResign --overwrite --debug
           fi
           ls -la out
+
+      - name: Package release files
+        run: |
+          set -e
+          APK=$(ls out/*.apk | head -1)
+          BT=$(ls -d $ANDROID_SDK_ROOT/build-tools/* | sort -V | tail -1)
+          VERSION=$($BT/aapt2 dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)
+          echo "App version: $VERSION"
+          test -n "$VERSION"
+          mkdir -p release pkg/res
+          cp "$APK" "release/forge-android-$VERSION-signed-aligned.apk"
+          printf '%s' "$VERSION" > release/version.txt
+          date -u '+%Y-%m-%d %H:%M:%S' | tr -d '\n' > release/build.txt
+          # assets.zip = what upstream snapshots ship: license files + res/ (with cardsfolder.zip)
+          cp forge-gui/LICENSE.txt forge-gui/release-files/*.txt pkg/ 2>/dev/null || true
+          mkdir -p pkg/res
+          rsync -a --exclude 'cardsfolder' --exclude '*.xcf' forge-gui/res/ pkg/res/
+          cp release/build.txt pkg/res/build.txt
+          mkdir -p pkg/res/cardsfolder
+          (cd forge-gui/res/cardsfolder && zip -qr -1 ../../../pkg/res/cardsfolder/cardsfolder.zip .)
+          (cd pkg && zip -qr -1 ../release/assets.zip .)
+          ls -la release
+
+      - name: Publish release "latest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag -y || true
+          gh release create latest release/* --target "$GITHUB_SHA" \
+            --title "Latest build" --notes "Build #${{ github.run_number }} (commit $GITHUB_SHA). The app's built-in updater reads this release."
 
       - uses: actions/upload-artifact@v4
         with:
