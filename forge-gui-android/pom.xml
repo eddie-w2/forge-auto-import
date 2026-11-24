@@ -933,6 +933,7 @@
                                 <configuration>
                                     <versionCodeUpdateFromVersion>false</versionCodeUpdateFromVersion>
                                     <manifestApplicationLabel>Forge Auto Import</manifestApplicationLabel>
+                                    <manifestVersionName>${snapshot-version}-autoimport.${app.build}</manifestVersionName>
                                     <manifestProviderAuthorities>
                                         <io.sentry.android.core.SentryInitProvider>${app.id.autoimport}.SentryInitProvider</io.sentry.android.core.SentryInitProvider>
                                         <io.sentry.android.core.SentryPerformanceProvider>${app.id.autoimport}.SentryPerformanceProvider</io.sentry.android.core.SentryPerformanceProvider>
