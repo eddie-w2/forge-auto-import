@@ -2,6 +2,7 @@ package forge.itemmanager;
 
 import java.util.Map.Entry;
 
+import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.utils.Align;
 
 import forge.Forge;
@@ -164,11 +165,19 @@ public final class DeckManager extends ItemManager<DeckProxy> implements IHasGam
                 ColorSet deckColor = deck.getColor();
                 float availableNameWidth = w - CardFaceSymbols.getWidth(deckColor, IMAGE_SIZE) - IMAGE_SIZE - 2 * FList.PADDING;
                 availableNameWidth -= IMAGE_SIZE + FList.PADDING;
+                final boolean moxfield = deck.isMoxfieldDeck();
+                if (moxfield) {
+                    //Moxfield badge: purple rounded square with a white "M", and a matching name color
+                    g.fillRoundRect(FSkinColor.getStandardColor(118, 75, 200), x, y, IMAGE_SIZE, IMAGE_SIZE, IMAGE_SIZE / 5);
+                    g.drawText("M", FSkinFont.get(12), Color.WHITE, x, y, IMAGE_SIZE, IMAGE_SIZE, false, Align.center, true);
+                    x += IMAGE_SIZE + FList.PADDING;
+                    availableNameWidth -= IMAGE_SIZE + FList.PADDING;
+                }
                 String name = deck.getName();
                 if (!deck.getPath().isEmpty()) { //render path after name if needed
                     name += " (" + deck.getPath().substring(1) + ")";
                 }
-                g.drawText(name, font, foreColor, x, y, availableNameWidth, IMAGE_SIZE, false, Align.left, true);
+                g.drawText(name, font, moxfield ? FSkinColor.getStandardColor(150, 105, 230) : foreColor, x, y, availableNameWidth, IMAGE_SIZE, false, Align.left, true);
                 x += availableNameWidth + FList.PADDING;
                 CardFaceSymbols.drawColorSet(g, deckColor, x, y, IMAGE_SIZE);
 

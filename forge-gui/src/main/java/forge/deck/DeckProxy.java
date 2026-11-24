@@ -87,6 +87,11 @@ public class DeckProxy implements InventoryItem {
         return path;
     }
 
+    /** True for decks imported from Moxfield. Never resolves lazily-generated decks. */
+    public boolean isMoxfieldDeck() {
+        return deck instanceof Deck d && MoxfieldProfile.isMoxfieldDeck(d);
+    }
+
     public String getSourceUrl() {
         final Deck sourceDeck = getDeck();
         return sourceDeck == null ? null : sourceDeck.getSourceUrl();

@@ -5,6 +5,8 @@ import forge.deck.DeckRecognizer.TokenType;
 import forge.deck.io.DeckStorage;
 import forge.game.GameType;
 import forge.localinstance.properties.ForgeConstants;
+import forge.model.FModel;
+import forge.util.storage.IStorage;
 import forge.util.Localizer;
 import forge.util.storage.StorageImmediatelySerialized;
 
@@ -33,14 +35,18 @@ public final class DeckUrlLoader {
     private static final Localizer localizer = Localizer.getInstance();
 
     public static DeckProxy load(final String deckUrl) throws IOException {
+        final StorageImmediatelySerialized<Deck> storage = getStorage();
+        final Deck deck = loadInto(deckUrl, storage);
+        return new DeckProxy(deck, localizer.getMessage("lblUrlDeck"), GameType.Constructed, storage);
+    }
+
+    private static Deck loadInto(final String deckUrl, final IStorage<Deck> storage) throws IOException {
         final String normalizedUrl = normalizeUrl(deckUrl);
         final DeckUrlProvider provider = getProvider(normalizedUrl);
-        final StorageImmediatelySerialized<Deck> storage = getStorage();
         final DeckUrlProvider.RemoteDeck remoteDeck = provider.load(normalizedUrl, storage);
         final Deck deck = importDeck(remoteDeck);
-
         storage.add(deck);
-        return new DeckProxy(deck, localizer.getMessage("lblUrlDeck"), GameType.Constructed, storage);
+        return deck;
     }
 
     public static String loadImportText(final String deckUrl) throws IOException {
@@ -56,6 +62,87 @@ public final class DeckUrlLoader {
             decks.add(new DeckProxy(deck, localizer.getMessage("lblUrlDeck"), GameType.Constructed, storage));
         }
         return decks;
+    }
+
+    /** Outcome of importing or refreshing several decks; failures never abort the rest of the batch. */
+    public record BatchResult(List<String> succeeded, Map<String, String> failed) {
+    }
+
+    /** Deck Manager storage that holds decks of the given Moxfield format. */
+    private static IStorage<Deck> storageForFormat(final String format) {
+        final String f = format == null ? "" : format.toLowerCase();
+        if (f.contains("oathbreaker")) {
+            return FModel.getDecks().getOathbreaker();
+        }
+        if (f.contains("tiny")) {
+            return FModel.getDecks().getTinyLeaders();
+        }
+        if (f.contains("brawl")) {
+            return FModel.getDecks().getBrawl();
+        }
+        if (f.contains("commander")) {
+            return FModel.getDecks().getCommander();
+        }
+        return FModel.getDecks().getConstructed();
+    }
+
+    private static List<IStorage<Deck>> deckManagerStorages() {
+        return List.of(FModel.getDecks().getConstructed(), FModel.getDecks().getCommander(),
+                FModel.getDecks().getOathbreaker(), FModel.getDecks().getTinyLeaders(), FModel.getDecks().getBrawl());
+    }
+
+    /** Imports each selected Moxfield deck independently into the Deck Manager list matching its format. */
+    public static BatchResult importMoxfieldDecks(final Iterable<MoxfieldProfile.DeckSummary> selected) {
+        final List<String> succeeded = new ArrayList<>();
+        final Map<String, String> failed = new LinkedHashMap<>();
+        for (final MoxfieldProfile.DeckSummary summary : selected) {
+            try {
+                succeeded.add(loadInto(summary.url(), storageForFormat(summary.format())).getName());
+            } catch (final IOException | RuntimeException ex) {
+                failed.put(summary.name(), String.valueOf(ex.getMessage()));
+            }
+        }
+        return new BatchResult(succeeded, failed);
+    }
+
+    /** All saved decks that were imported from Moxfield. */
+    public static List<Deck> getMoxfieldDecks() {
+        final List<Deck> decks = new ArrayList<>();
+        for (final IStorage<Deck> storage : deckManagerStorages()) {
+            for (final Deck deck : storage) {
+                if (MoxfieldProfile.isMoxfieldDeck(deck)) {
+                    decks.add(deck);
+                }
+            }
+        }
+        return decks;
+    }
+
+    /** Re-downloads every saved Moxfield deck from its source URL, replacing the local copy in the same list. */
+    public static BatchResult refreshMoxfieldDecks() {
+        final List<String> succeeded = new ArrayList<>();
+        final Map<String, String> failed = new LinkedHashMap<>();
+        for (final IStorage<Deck> storage : deckManagerStorages()) {
+            final List<Deck> mine = new ArrayList<>();
+            for (final Deck deck : storage) {
+                if (MoxfieldProfile.isMoxfieldDeck(deck)) {
+                    mine.add(deck);
+                }
+            }
+            for (final Deck old : mine) {
+                final String oldName = old.getName();
+                try {
+                    final String newName = loadInto(old.getSourceUrl(), storage).getName();
+                    if (!newName.equals(oldName)) {
+                        storage.delete(oldName); //deck was renamed on Moxfield; drop the stale copy
+                    }
+                    succeeded.add(newName);
+                } catch (final IOException | RuntimeException ex) {
+                    failed.put(oldName, String.valueOf(ex.getMessage()));
+                }
+            }
+        }
+        return new BatchResult(succeeded, failed);
     }
 
     private static DeckUrlProvider getProvider(final String normalizedUrl) throws IOException {

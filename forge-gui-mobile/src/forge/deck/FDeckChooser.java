@@ -81,6 +81,7 @@ public class FDeckChooser extends FScreen {
     private final FButton btnEditDeck = new FButton(Forge.getLocalizer().getInstance().getMessage("btnEditDeck"));
     private final FButton btnViewDeck = new FButton(Forge.getLocalizer().getInstance().getMessage("lblViewDeck"));
     private final FButton btnRandom = new FButton(Forge.getLocalizer().getInstance().getMessage("lblRandomDeck"));
+    private final FButton btnMoxfield = new FButton(Forge.getLocalizer().getInstance().getMessage("lblMoxfieldDecks"));
 
     private RegisteredPlayer player;
     private boolean isAi;
@@ -862,6 +863,9 @@ public class FDeckChooser extends FScreen {
             add(btnEditDeck);
             add(btnViewDeck);
             add(btnRandom);
+            btnMoxfield.setVisible(lstDecks.getGameType() == GameType.DeckManager);
+            btnMoxfield.setCommand(event -> FMoxfieldFlow.show(() -> refreshDecksList(selectedDeckType, true, null)));
+            add(btnMoxfield);
         }
         else {
             restoreSavedState(); //ensure decks refreshed and state restored in case any deleted or added since last loaded
@@ -1216,6 +1220,10 @@ public class FDeckChooser extends FScreen {
         else {
             totalButtonHeight = 2 * fieldHeight + PADDING;
         }
+        final boolean moxfield = btnMoxfield.isVisible();
+        if (moxfield) {
+            totalButtonHeight += fieldHeight + PADDING; //Moxfield button gets its own full-width row
+        }
 
         cmbDeckTypes.setBounds(x, y, width, fieldHeight);
         y += cmbDeckTypes.getHeight() + 1;
@@ -1256,6 +1264,9 @@ public class FDeckChooser extends FScreen {
         }
         else {
             btnRandom.setBounds(x, y, width, fieldHeight);
+        }
+        if (moxfield) {
+            btnMoxfield.setBounds(PADDING, y + fieldHeight + PADDING, width, fieldHeight);
         }
     }
 

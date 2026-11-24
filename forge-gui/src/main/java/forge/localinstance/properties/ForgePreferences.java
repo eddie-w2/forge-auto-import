@@ -64,6 +64,7 @@ public class ForgePreferences extends AbstractPreferences<ForgePreferences.FPref
         MATCH_HOT_SEAT_MODE("false"),
 
         UI_MATCHES_PER_GAME("3"),
+        MOXFIELD_USERNAME(""),
         UI_LOBBY_SETUP(""),
         UI_RANDOM_FOIL ("false"),
         UI_AVATARS ("0,1"),
